@@ -1,6 +1,10 @@
 # PawPal+ Project Reflection
 
 ## 1. System Design
+User should be able to schedule reoccuring monthly vet check ups.
+User should be able to see today's task.
+User should be able to add a pet.
+
 
 **a. Initial design**
 
