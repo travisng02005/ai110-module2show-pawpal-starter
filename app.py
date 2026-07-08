@@ -93,21 +93,32 @@ else:
 
     all_tasks = owner.get_all_tasks()
     if all_tasks:
-        st.write("Current tasks:")
-        st.table(
-            [
-                {
-                    "pet": task.pet.name if task.pet else "",
-                    "title": task.title,
-                    "category": task.category,
-                    "duration_minutes": task.duration_minutes,
-                    "priority": task.priority,
-                    "recurrence": task.recurrence,
-                    "next_due_date": task.next_due_date,
-                }
-                for task in all_tasks
-            ]
-        )
+        status_filter = st.radio("Show", ["All", "Pending", "Completed"], horizontal=True)
+        if status_filter == "Pending":
+            visible_tasks = owner.get_tasks_by_status(completed=False)
+        elif status_filter == "Completed":
+            visible_tasks = owner.get_tasks_by_status(completed=True)
+        else:
+            visible_tasks = all_tasks
+
+        if visible_tasks:
+            st.table(
+                [
+                    {
+                        "pet": task.pet.name if task.pet else "",
+                        "title": task.title,
+                        "category": task.category,
+                        "duration_minutes": task.duration_minutes,
+                        "priority": task.priority,
+                        "recurrence": task.recurrence,
+                        "next_due_date": task.next_due_date,
+                        "completed": task.completed,
+                    }
+                    for task in visible_tasks
+                ]
+            )
+        else:
+            st.info(f"No {status_filter.lower()} tasks.")
     else:
         st.info("No tasks yet. Add one above.")
 
@@ -123,4 +134,41 @@ if st.button("Generate schedule"):
     st.session_state.scheduler = scheduler
 
 if "scheduler" in st.session_state:
-    st.code(st.session_state.scheduler.explain())
+    scheduler: Scheduler = st.session_state.scheduler
+
+    if not scheduler.scheduled_tasks:
+        st.info(f"No tasks scheduled for {scheduler.date}.")
+    else:
+        ordered_pairs = scheduler.sort_by_time(
+            scheduler.sort_by_priority([task for _, task in scheduler.scheduled_tasks])
+        )
+        pet_by_task = {task: pet for pet, task in scheduler.scheduled_tasks}
+
+        col1, col2 = st.columns(2)
+        col1.metric("Time used", f"{scheduler.total_duration()} min")
+        col2.metric("Time remaining", f"{scheduler.remaining_time()} min")
+
+        st.table(
+            [
+                {
+                    "pet": pet_by_task[task].name,
+                    "task": task.title,
+                    "priority": task.priority,
+                    "duration_minutes": task.duration_minutes,
+                    "scheduled_time": task.scheduled_time or "",
+                }
+                for task in ordered_pairs
+            ]
+        )
+
+        conflicts = scheduler.detect_conflicts()
+        time_conflicts = scheduler.detect_time_conflicts()
+
+        for first, second in conflicts:
+            st.warning(f"Conflict: '{first.title}' vs '{second.title}' ({first.category})")
+
+        for warning in time_conflicts:
+            st.warning(warning)
+
+        if not conflicts and not time_conflicts:
+            st.success("Schedule built with no conflicts.")
