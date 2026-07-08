@@ -7,6 +7,7 @@ classDiagram
         +add_pet(pet) None
         +remove_pet(pet) None
         +get_pets() List~Pet~
+        +get_all_tasks() List~Task~
     }
 
     class Pet {
@@ -32,17 +33,17 @@ classDiagram
         +str recurrence
         +date last_completed_date
         +date next_due_date
-        +mark_complete() None
+        +mark_complete(completed_date) None
         +is_overdue(date) bool
         +is_due(date) bool
     }
 
-    class DailyPlan {
+    class Scheduler {
         +date date
-        +Pet pet
-        +List~tuple~ scheduled_tasks
+        +Owner owner
         +int time_budget_minutes
-        +build(pet, date, available_minutes) DailyPlan
+        +List~tuple~ scheduled_tasks
+        +build(owner, date, available_minutes) Scheduler
         +sort_by_priority(tasks) List~Task~
         +filter_by_time(tasks, budget) List~Task~
         +detect_conflicts() List~tuple~
@@ -53,4 +54,5 @@ classDiagram
 
     Owner "1" --> "*" Pet : owns
     Pet "1" --> "*" Task : has
-    DailyPlan "1" --> "*" Task : schedules
+    Scheduler "1" --> "1" Owner : schedules for
+    Scheduler "1" --> "*" Task : schedules
