@@ -38,6 +38,33 @@ class Owner:
             tasks.extend(pet.get_tasks())
         return tasks
 
+    def get_tasks_by_pet(self, pet: Pet) -> list[Task]:
+        """Return all of this owner's tasks belonging to a specific pet."""
+        return self.filter_tasks(pet_name=pet.name)
+
+    def get_tasks_by_status(self, completed: bool) -> list[Task]:
+        """Return all of this owner's tasks matching the given completion status."""
+        return self.filter_tasks(completed=completed)
+
+    def filter_tasks(self, pet_name: str | None = None, completed: bool | None = None) -> list[Task]:
+        """Return this owner's tasks filtered by pet name and/or completion status.
+
+        Either filter may be omitted; passing both narrows by both criteria.
+
+        Args:
+            pet_name: If given, only keep tasks belonging to the pet with this name.
+            completed: If given, only keep tasks whose completed flag matches.
+
+        Returns:
+            The subset of get_all_tasks() matching every filter that was given.
+        """
+        tasks = self.get_all_tasks()
+        if pet_name is not None:
+            tasks = [task for task in tasks if task.pet is not None and task.pet.name == pet_name]
+        if completed is not None:
+            tasks = [task for task in tasks if task.completed == completed]
+        return tasks
+
 
 @dataclass(eq=False)
 class Pet:
@@ -69,6 +96,15 @@ class Pet:
         """Return this pet's tasks due on or before the given date."""
         return [task for task in self.tasks if task.is_due(target_date)]
 
+    def get_recurring_tasks(self) -> list[Task]:
+        """Return this pet's recurring tasks.
+
+        Returns:
+            Every task on this pet whose recurrence is one of the known
+            schedules (daily/weekly/monthly), regardless of due/completed state.
+        """
+        return [task for task in self.tasks if task.is_recurring]
+
 
 @dataclass(eq=False)
 class Task:
@@ -81,19 +117,55 @@ class Task:
     recurrence: str | None = None
     last_completed_date: date | None = None
     next_due_date: date | None = None
+    scheduled_time: str | None = None  # "HH:MM", 24-hour
 
-    def mark_complete(self, completed_date: date | None = None) -> None:
-        """Mark this task complete and schedule its next occurrence if recurring."""
+    @property
+    def is_recurring(self) -> bool:
+        """Return whether this task repeats on a known recurrence schedule.
+
+        Returns:
+            True if recurrence is "daily", "weekly", or "monthly"; False otherwise
+            (including None or an unrecognized value).
+        """
+        return self.recurrence in _RECURRENCE_DAYS
+
+    def mark_complete(self, completed_date: date | None = None) -> Task | None:
+        """Mark this task complete and, if recurring, spawn its next occurrence.
+
+        This instance is finalized as a completed historical record. If the
+        task recurs (daily/weekly/monthly), a new Task instance is created for
+        the next due date, attached to the same pet, and returned. Returns
+        None for one-off tasks.
+
+        Args:
+            completed_date: The date the task was completed on. Defaults to
+                this task's next_due_date, or today if that is also unset.
+
+        Returns:
+            The newly created Task for the next occurrence, or None if this
+            task does not recur.
+        """
         completed_date = completed_date or self.next_due_date or date.today()
         self.completed = True
         self.last_completed_date = completed_date
+        self.next_due_date = None
 
         recurrence_days = _RECURRENCE_DAYS.get(self.recurrence)
-        if recurrence_days is not None:
-            self.next_due_date = completed_date + timedelta(days=recurrence_days)
-            self.completed = False
-        else:
-            self.next_due_date = None
+        if recurrence_days is None:
+            return None
+
+        next_task = Task(
+            title=self.title,
+            category=self.category,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            recurrence=self.recurrence,
+            next_due_date=completed_date + timedelta(days=recurrence_days),
+            scheduled_time=self.scheduled_time,
+        )
+        if self.pet is not None:
+            self.pet.add_task(next_task)
+        return next_task
 
     def is_overdue(self, target_date: date) -> bool:
         """Return whether this task's due date has passed the given date."""
@@ -136,6 +208,25 @@ class Scheduler:
         """Return the tasks sorted from highest to lowest priority."""
         return sorted(tasks, key=lambda task: _PRIORITY_ORDER.get(task.priority, len(_PRIORITY_ORDER)))
 
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Return the tasks sorted by scheduled time of day, earliest first.
+
+        Tasks with no scheduled_time are sorted to the end.
+
+        Args:
+            tasks: The tasks to sort. Not mutated.
+
+        Returns:
+            A new list of the same tasks in ascending scheduled_time order.
+        """
+        def time_key(task: Task) -> tuple[int, int, int]:
+            if task.scheduled_time is None:
+                return (1, 0, 0)
+            hours, minutes = task.scheduled_time.split(":")
+            return (0, int(hours), int(minutes))
+
+        return sorted(tasks, key=time_key)
+
     def filter_by_time(self, tasks: list[Task], budget: int) -> list[Task]:
         """Return the tasks that fit within the given time budget."""
         fitted = []
@@ -157,6 +248,35 @@ class Scheduler:
             else:
                 seen[key] = task
         return conflicts
+
+    def detect_time_conflicts(self) -> list[str]:
+        """Return warning messages for scheduled tasks that share a scheduled_time.
+
+        This is a lightweight exact-match check on scheduled_time (not a full
+        overlapping-duration calculation), and it checks across all pets, not
+        just within one. Tasks with no scheduled_time are skipped rather than
+        treated as conflicting with each other. Returns warning strings instead
+        of raising, so a scheduling clash never crashes the program.
+
+        Returns:
+            One warning string per colliding pair of scheduled tasks (empty if
+            no two scheduled tasks share a scheduled_time).
+        """
+        warnings = []
+        seen: dict[str, tuple[Pet, Task]] = {}
+        for pet, task in self.scheduled_tasks:
+            if task.scheduled_time is None:
+                continue
+            existing = seen.get(task.scheduled_time)
+            if existing is not None:
+                existing_pet, existing_task = existing
+                warnings.append(
+                    f"Warning: '{existing_task.title}' ({existing_pet.name}) and "
+                    f"'{task.title}' ({pet.name}) are both scheduled at {task.scheduled_time}."
+                )
+            else:
+                seen[task.scheduled_time] = (pet, task)
+        return warnings
 
     def total_duration(self) -> int:
         """Return the total duration in minutes of all scheduled tasks."""
@@ -180,6 +300,9 @@ class Scheduler:
             lines.append("Conflicts detected:")
             for first, second in conflicts:
                 lines.append(f"  - {first.title} vs {second.title} ({first.category})")
+
+        for warning in self.detect_time_conflicts():
+            lines.append(warning)
 
         lines.append(f"Remaining time: {self.remaining_time()} min")
         return "\n".join(lines)

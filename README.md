@@ -72,14 +72,12 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
-
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.sort_by_priority()`, `Scheduler.sort_by_time()` | `sort_by_priority` orders tasks high → medium → low for building today's schedule. `sort_by_time` orders tasks by `scheduled_time` ("HH:MM", earliest first); tasks with no `scheduled_time` sort to the end. |
+| Filtering | `Owner.filter_tasks()`, `Owner.get_tasks_by_pet()`, `Owner.get_tasks_by_status()`, `Scheduler.filter_by_time()` | `filter_tasks` narrows tasks by pet name and/or completion status (either or both). `get_tasks_by_pet`/`get_tasks_by_status` are thin wrappers around it. `filter_by_time` greedily keeps tasks (in priority order) until the time budget runs out, dropping any that don't fit. |
+| Conflict handling | `Scheduler.detect_conflicts()`, `Scheduler.detect_time_conflicts()` | `detect_conflicts` flags scheduled tasks that share the same pet + category (e.g., two feeding tasks for the same pet). `detect_time_conflicts` is a lightweight exact-match check across *all* pets for tasks sharing the same `scheduled_time`; it returns warning strings (see `Scheduler.explain()`) instead of raising, so a scheduling clash never crashes the app. |
+| Recurring tasks | `Task.is_recurring`, `Task.mark_complete()`, `Pet.get_recurring_tasks()` | Recurrence is tracked via `Task.recurrence` ("daily", "weekly", or "monthly"). Calling `mark_complete()` finalizes the current instance as a completed historical record and, if recurring, automatically creates and attaches a new `Task` instance for the next due date. |
 
 ## 📸 Demo Walkthrough
 
