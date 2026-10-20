@@ -1,0 +1,97 @@
+classDiagram
+    class Priority {
+        <<enumeration>>
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+    }
+
+    class Category {
+        <<enumeration>>
+        FEEDING
+        WALK
+        MEDS
+        GROOMING
+        VET
+        PLAY
+        GENERAL
+    }
+
+    class Frequency {
+        <<enumeration>>
+        ONCE
+        DAILY
+        WEEKLY
+    }
+
+    class Task {
+        +str title
+        +Category category
+        +int duration_minutes
+        +Priority priority
+        +datetime due
+        +Frequency frequency
+        +bool completed
+        +Pet pet
+        +mark_complete() Task
+        +reschedule(new_due) void
+        +is_overdue(now) bool
+        +__str__() str
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +add_task(task) void
+        +remove_task(task) void
+        +get_pending_tasks() list~Task~
+        +get_tasks_by_category(category) list~Task~
+    }
+
+    class Owner {
+        +str name
+        +int available_minutes_per_day
+        +dict preferences
+        +list~Pet~ pets
+        +add_pet(pet) void
+        +remove_pet(pet) void
+        +get_all_tasks() list~Task~
+        +get_available_time(date) int
+    }
+
+    class ScheduledItem {
+        +Task task
+        +datetime start
+        +datetime end
+        +str reason
+        +overlaps(other) bool
+    }
+
+    class Scheduler {
+        +Owner owner
+        +list~ScheduledItem~ schedule
+        +list~Task~ skipped_tasks
+        +generate_schedule(date) list~ScheduledItem~
+        +detect_conflicts() list
+        +sort_by_time() list~ScheduledItem~
+        +sort_by_priority() list~ScheduledItem~
+        +filter_tasks(pet, status) list~Task~
+        +explain_plan() str
+        +get_next_task(now) ScheduledItem
+        -_collect_pending() list~Task~
+        -_rank(tasks) list~Task~
+        -_fit(tasks, date) void
+    }
+
+    Owner "1" *-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Task "*" --> "1" Pet : belongs to
+    ScheduledItem "*" --> "1" Task : wraps
+    Scheduler "1" o-- "*" ScheduledItem : produces
+    Scheduler --> Owner : plans for
+    Task ..> Priority
+    Task ..> Category
+    Task ..> Frequency
