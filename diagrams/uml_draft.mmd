@@ -1,0 +1,55 @@
+classDiagram
+    class Task {
+        +str title
+        +str category
+        +int duration_minutes
+        +int priority
+        +time due_time
+        +str frequency
+        +bool completed
+        +mark_complete() Task
+        +reschedule(new_time) void
+        +is_overdue(now) bool
+        +__str__() str
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +add_task(task) void
+        +remove_task(task) void
+        +get_pending_tasks() list~Task~
+        +get_tasks_by_category(category) list~Task~
+    }
+
+    class Owner {
+        +str name
+        +int available_minutes_per_day
+        +dict preferences
+        +list~Pet~ pets
+        +add_pet(pet) void
+        +remove_pet(pet) void
+        +get_all_tasks() list~Task~
+        +get_available_time(date) int
+    }
+
+    class Scheduler {
+        +Owner owner
+        +list schedule
+        +list~Task~ skipped_tasks
+        +generate_schedule(date) list
+        +detect_conflicts() list
+        +sort_by_time() list
+        +sort_by_priority() list
+        +filter_tasks(pet, status) list~Task~
+        +explain_plan() str
+        +get_next_task(now) Task
+    }
+
+    Owner "1" *-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Scheduler --> Owner : plans for
+    Scheduler ..> Task : schedules
