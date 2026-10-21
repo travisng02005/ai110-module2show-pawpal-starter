@@ -1,0 +1,126 @@
+classDiagram
+    class Priority {
+        <<enumeration>>
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+    }
+
+    class Category {
+        <<enumeration>>
+        FEEDING
+        WALK
+        MEDS
+        GROOMING
+        VET
+        PLAY
+        GENERAL
+    }
+
+    class Frequency {
+        <<enumeration>>
+        ONCE
+        DAILY
+        WEEKLY
+    }
+
+    class Task {
+        +str title
+        +Category category
+        +int duration_minutes
+        +Priority priority
+        +datetime due
+        +Frequency frequency
+        +bool completed
+        +Pet pet
+        +mark_complete(completed_at) Task
+        +reschedule(new_due) void
+        +is_overdue(now) bool
+        +window() tuple~datetime, datetime~
+        +conflicts_with(other) bool
+        +__str__() str
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +add_task(task) void
+        +remove_task(task) void
+        +get_pending_tasks() list~Task~
+        +get_tasks_by_category(category) list~Task~
+    }
+
+    class Owner {
+        +str name
+        +int available_minutes_per_day
+        +dict preferences
+        +list~Pet~ pets
+        +add_pet(pet) void
+        +remove_pet(pet) void
+        +get_all_tasks() list~Task~
+        +get_available_time(date) int
+    }
+
+    class ScheduledItem {
+        +Task task
+        +datetime start
+        +datetime end
+        +str reason
+        +overlaps(other) bool
+    }
+
+    class Scheduler {
+        +Owner owner
+        +list~ScheduledItem~ schedule
+        +list~Task~ skipped_tasks
+        +list~tuple~ unplaced
+        +list~str~ warnings
+        +generate_schedule(date) list~ScheduledItem~
+        +sort_by_time() list~ScheduledItem~
+        +sort_by_priority() list~ScheduledItem~
+        +sort_tasks_by_time(tasks) list~Task~
+        +filter_tasks(pet, status, category) list~Task~
+        +get_schedule_for(pet) list~ScheduledItem~
+        +get_skipped_for(pet) list~Task~
+        +detect_conflicts() list~tuple~
+        +detect_task_conflicts(on_date) list~tuple~
+        +conflict_warnings(on_date, pet) list~str~
+        +complete_task(task, now) Task
+        +explain_plan() str
+        +get_next_task(now) ScheduledItem
+        -_collect_pending(on_date) list~Task~
+        -_rank(tasks) list~Task~
+        -_score(task, on_date) int
+        -_select(tasks, on_date) list~Task~
+        -_place(chosen, on_date) void
+        -_take_slot(gaps, desired, minutes)$ datetime
+        -_give_back(gaps, start, minutes)$ void
+        -_reason(task, start, on_date)$ str
+    }
+
+    class StreamlitApp {
+        <<app.py>>
+        +Owner owner
+        +Scheduler scheduler
+        add and edit pets
+        add tasks and mark complete
+        generate and display schedule
+    }
+
+    Owner "1" *-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Task "*" --> "1" Pet : belongs to
+    ScheduledItem "*" --> "1" Task : wraps
+    Scheduler "1" o-- "*" ScheduledItem : produces
+    Scheduler --> Owner : plans for
+    Scheduler ..> Task : selects, skips, flags conflicts
+    Scheduler ..> Pet : filters by
+    Scheduler ..> Category : MEDS is mandatory
+    Task ..> Priority
+    Task ..> Category
+    Task ..> Frequency
+    StreamlitApp --> Owner : keeps in session_state
+    StreamlitApp --> Scheduler : calls
