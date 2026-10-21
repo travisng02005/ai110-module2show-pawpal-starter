@@ -44,7 +44,7 @@ pip install -r requirements.txt
 
 ## 🖥️ Sample Output
 
-Output from running `python3 main.py`, which builds an owner with two pets (Buddy and Mia), adds five tasks, and prints the generated plan:
+Output from running `python3 main.py`, which builds an owner with two pets (Buddy and Mia), adds six tasks (Buddy's walk and Mia's breakfast are deliberately due at the same time), and prints the generated plan:
 
 ```
 Today's Schedule · Travis · Tuesday, October 20
@@ -52,17 +52,22 @@ Today's Schedule · Travis · Tuesday, October 20
 TIME          PET     TASK              PRIORITY   DURATION
 ───────────────────────────────────────────────────────────
 08:00-08:30   Buddy   Morning walk      HIGH         30 min
-08:30-08:35   Mia     Thyroid meds      HIGH          5 min
-              ↳ due 08:15, delayed to 08:30 by earlier tasks
+08:30-08:40   Mia     Breakfast         HIGH         10 min
+              ↳ due 08:00, shifted +30 min to 08:30 (slot taken)
+08:40-08:45   Mia     Thyroid meds      HIGH          5 min
+              ↳ due 08:15, shifted +25 min to 08:40 (slot taken)
+08:45-09:05   Buddy   Brush coat        LOW          20 min
+              ↳ flexible time
 12:00-12:25   Mia     Playtime          MEDIUM       25 min
 18:00-18:10   Buddy   Evening feeding   HIGH         10 min
-18:10-18:30   Buddy   Brush coat        LOW          20 min
-              ↳ flexible time
 ───────────────────────────────────────────────────────────
-Planned 90 of 120 min  [███████████████░░░░░] 75%
+Planned 100 of 120 min  [█████████████████░░░] 83%
+
+⚠ Buddy: Morning walk (08:00) is at the same time as Mia: Breakfast (08:00) [different pets]
+⚠ Buddy: Morning walk (08:00) overlaps Mia: Thyroid meds (08:15) [different pets]
 ```
 
-The plan covers both pets at once. Mia's meds were due at 08:15 but start at 08:30 because Buddy's walk runs until then, and the output says so. To see one pet's tasks only, pass a name: `python3 main.py Mia`.
+The plan covers both pets at once. Breakfast and the meds were due at 08:00 and 08:15 but start later because Buddy's walk runs until 08:30, and the output says so. The warnings under the table flag tasks whose requested times clash; the scheduler still places every task, just later. To see one pet's tasks only, pass a name: `python3 main.py Mia`.
 
 ## 🧪 Testing PawPal+
 
@@ -82,25 +87,59 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-| Feature           | Method(s)                       | Notes                            |
-|-------------------|---------------------------------|----------------------------------|
-| Task sorting      | `_rank()`, `sort_by_priority()` | Priority first, then due time    |
-| Filtering         | `_fit()`, `filter_tasks()`      | Skips tasks past the time budget |
-| Conflict handling | `detect_conflicts()`            | Flags overlapping time slots     |
-| Recurring tasks   | `mark_complete()`               | Daily or weekly copy per pet     |
+| Feature           | Method(s)                                    | Notes                                         |
+|-------------------|----------------------------------------------|-----------------------------------------------|
+| Task ranking      | `_rank()`, `sort_by_priority()`              | Priority first, then due time                 |
+| Task selection    | `_score()`, `_select()`                      | Knapsack: best total score within the budget  |
+| Time placement    | `_place()`                                   | Free-gap list; bounded shift for clashes      |
+| Filtering         | `filter_tasks()`, `sort_tasks_by_time()`     | By pet, status, category                      |
+| Conflict warnings | `conflict_warnings()`, `detect_conflicts()`  | Warns about clashing requested times          |
+| Recurring tasks   | `mark_complete()`, `complete_task()`         | Daily or weekly copy per pet                  |
 
-- **Sorting:** `_rank()` orders tasks by priority (highest first), then earlier due time, with
-  undated tasks last. `sort_by_time()` and `sort_by_priority()` return new lists of the planned
-  items and leave the stored schedule unchanged.
-- **Filtering:** `_collect_pending()` gathers pending tasks from every pet through
-  `Owner.get_all_tasks()`. `_fit()` keeps tasks until the owner's time budget runs out and moves the
-  rest to `skipped_tasks`. `filter_tasks()` filters by pet and/or completion status, and
-  `get_schedule_for()` / `get_skipped_for()` return one pet's slice of the plan.
-- **Conflicts:** `_fit()` never starts a task before the previous one ends, so tasks due at the same
-  time are delayed (the reason says so). `ScheduledItem.overlaps()` and `detect_conflicts()` catch
-  overlaps added or moved by hand; a generated plan has none.
-- **Recurrence:** completing a `DAILY` or `WEEKLY` task adds a copy due one day or week later to the
-  same pet. One-off or already-completed tasks create nothing.
+- **Selection:** `_score()` values a task at 10 per priority level, plus 15 if it is overdue from an
+  earlier day. `_select()` solves a 0/1 knapsack over minutes by dynamic programming, so two short
+  tasks can beat one long one of equal priority. Medication tasks are mandatory: they are always
+  chosen, and if they alone exceed the budget the plan keeps them and adds a warning. Tasks left out
+  go to `skipped_tasks`.
+- **Placement:** `_place()` tracks free time as a list of gaps. Dated tasks go first, highest
+  priority first, at their due time; a clash moves a task to the next free slot, and the reason says
+  by how much. A task that would shift more than `preferences["max_delay_minutes"]` (default 60) is
+  recorded in `unplaced` with a reason instead. Undated tasks then fill the earliest remaining gaps.
+### Sorting
+
+- `Scheduler.sort_by_time()` returns the planned items ordered by start time (a new list).
+- `Scheduler.sort_by_priority()` returns planned items highest priority first, ties broken by start time.
+- `Scheduler.sort_tasks_by_time(tasks=None)` orders raw tasks (default: all pets') by due time, with
+  undated tasks last.
+
+### Filtering
+
+- `Scheduler.filter_tasks(pet, status, category)` filters across all pets. `pet` can be a `Pet` or a
+  case-insensitive name, `status` is `True` (done) / `False` (pending), and `category` is a `Category`.
+  Any argument left as `None` is ignored.
+- `Scheduler.get_schedule_for(pet)` returns one pet's planned items in time order, and
+  `Scheduler.get_skipped_for(pet)` returns that pet's tasks that did not fit the time budget.
+
+### Conflict detection
+
+- `Task.window()` gives a task's `(start, end)` from its due time and duration, and
+  `Task.conflicts_with(other)` is true when two dated tasks' windows overlap.
+- `Scheduler.detect_task_conflicts(on_date=None)` compares all pending dated tasks across every pet
+  (optionally for one day) and returns the clashing pairs.
+- `Scheduler.conflict_warnings(on_date=None, pet=None)` turns those pairs into readable messages,
+  labelled "same pet" or "different pets". It never raises: bad data such as mixed timezone-aware and
+  naive datetimes yields a warning string instead.
+- The scheduler moves tasks apart, so a generated plan has no overlaps. `Scheduler.detect_conflicts()`
+  (using `ScheduledItem.overlaps()`) is a safety check on the finished plan.
+
+### Recurring tasks
+
+- `Task.mark_complete(completed_at=None)` marks the task done. For a `DAILY` or `WEEKLY` task it adds a
+  copy due one day or week later to the same pet and returns it. If `completed_at` is given and the
+  task was finished late, the due date keeps stepping forward until it is in the future.
+- One-off tasks, and tasks that are already completed, create nothing.
+- `Scheduler.complete_task(task, now=None)` is the scheduler-level entry point; it calls
+  `mark_complete()` with the current time.
 
 ## 📸 Demo Walkthrough
 

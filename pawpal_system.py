@@ -26,6 +26,10 @@ class Frequency(Enum):
     WEEKLY = "weekly"
 
 
+PRIORITY_WEIGHT = 10
+OVERDUE_BONUS = 15
+DEFAULT_MAX_DELAY_MINUTES = 60
+
 _RECURRENCE_STEP = {
     Frequency.DAILY: timedelta(days=1),
     Frequency.WEEKLY: timedelta(weeks=1),
@@ -50,8 +54,13 @@ class Task:
         if self.duration_minutes <= 0:
             raise ValueError("duration_minutes must be positive")
 
-    def mark_complete(self) -> Optional["Task"]:
-        """Mark done; if recurring, add the next occurrence to self.pet and return it."""
+    def mark_complete(self, completed_at: Optional[datetime] = None) -> Optional["Task"]:
+        """Mark done; if recurring, add the next occurrence to self.pet and return it.
+
+        The next due time steps forward from this one. If completed_at is given and
+        the task was finished late, it keeps stepping until the next occurrence is
+        in the future, so a skipped day never leaves a stale due date behind.
+        """
         if self.completed:
             return None
         self.completed = True
@@ -61,6 +70,9 @@ class Task:
             return None
 
         next_due = self.due + step if self.due else None
+        if next_due is not None and completed_at is not None:
+            while next_due <= completed_at:
+                next_due += step
         next_task = replace(self, due=next_due, completed=False)
         if self.pet is not None:
             self.pet.add_task(next_task)
@@ -73,6 +85,17 @@ class Task:
     def is_overdue(self, now: datetime) -> bool:
         """True if the task is unfinished and its due time has passed."""
         return not self.completed and self.due is not None and self.due < now
+
+    def window(self) -> Optional[tuple[datetime, datetime]]:
+        """(start, end) the task occupies if done at its due time; None if undated."""
+        if self.due is None:
+            return None
+        return self.due, self.due + timedelta(minutes=self.duration_minutes)
+
+    def conflicts_with(self, other: "Task") -> bool:
+        """True if both tasks are dated and their due-time windows overlap."""
+        a, b = self.window(), other.window()
+        return a is not None and b is not None and a[0] < b[1] and b[0] < a[1]
 
     def __str__(self) -> str:
         """One-line summary like '[ ] Walk (walk, 30 min, HIGH, due Oct 20 08:00)'."""
@@ -170,12 +193,18 @@ class Scheduler:
         self.owner = owner
         self.schedule: list[ScheduledItem] = []
         self.skipped_tasks: list[Task] = []
+        # Selected tasks that found no free slot, with the reason why.
+        self.unplaced: list[tuple[Task, str]] = []
+        self.warnings: list[str] = []
 
     def generate_schedule(self, on_date: date) -> list[ScheduledItem]:
-        """Clear previous state, then collect, sort, fit, and explain."""
+        """Clear previous state, then collect, rank, select, and place."""
         self.schedule = []
         self.skipped_tasks = []
-        self._fit(self._rank(self._collect_pending(on_date)), on_date)
+        self.unplaced = []
+        self.warnings = []
+        ranked = self._rank(self._collect_pending(on_date))
+        self._place(self._select(ranked, on_date), on_date)
         return self.schedule
 
     def detect_conflicts(self) -> list[tuple[ScheduledItem, ScheduledItem]]:
@@ -192,6 +221,56 @@ class Scheduler:
         """Scheduled items ordered by start time (returns a new list)."""
         return sorted(self.schedule, key=lambda item: item.start)
 
+    def sort_tasks_by_time(self, tasks: Optional[list[Task]] = None) -> list[Task]:
+        """Tasks (default: all pets') ordered by due time, undated last (new list)."""
+        if tasks is None:
+            tasks = self.owner.get_all_tasks()
+        return sorted(tasks, key=lambda t: (t.due is None, t.due or datetime.min))
+
+    def detect_task_conflicts(
+        self, on_date: Optional[date] = None
+    ) -> list[tuple[Task, Task]]:
+        """Pending tasks whose due-time windows overlap, across all pets.
+
+        The scheduler slides tasks apart, so this flags the requests that cannot
+        all happen at their asked-for times. Pass on_date to check a single day.
+        """
+        tasks = [
+            t
+            for t in self.sort_tasks_by_time(self.filter_tasks(status=False))
+            if t.due is not None and (on_date is None or t.due.date() == on_date)
+        ]
+        return [
+            (a, b)
+            for i, a in enumerate(tasks)
+            for b in tasks[i + 1:]
+            if a.conflicts_with(b)
+        ]
+
+    def conflict_warnings(
+        self, on_date: Optional[date] = None, pet: Optional[Pet] = None
+    ) -> list[str]:
+        """Human-readable warnings for detect_task_conflicts; never raises.
+
+        Pass pet to keep only conflicts involving that pet. Bad data (e.g. mixing
+        timezone-aware and naive datetimes) yields a warning instead of an error.
+        """
+        try:
+            pairs = self.detect_task_conflicts(on_date)
+        except (TypeError, ValueError) as err:
+            return [f"Could not check for conflicts: {err}"]
+        warnings = []
+        for a, b in pairs:
+            if pet is not None and a.pet is not pet and b.pet is not pet:
+                continue
+            kind = "same pet" if a.pet is b.pet else "different pets"
+            verb = "is at the same time as" if a.due == b.due else "overlaps"
+            warnings.append(
+                f"{a.pet.name if a.pet else '?'}: {a.title} ({a.due:%H:%M}) {verb} "
+                f"{b.pet.name if b.pet else '?'}: {b.title} ({b.due:%H:%M}) [{kind}]"
+            )
+        return warnings
+
     def sort_by_priority(self) -> list[ScheduledItem]:
         """Scheduled items ordered highest priority first (returns a new list)."""
         return sorted(
@@ -207,14 +286,24 @@ class Scheduler:
         return [task for task in self.skipped_tasks if task.pet is pet]
 
     def filter_tasks(
-        self, pet: Optional[Pet] = None, status: Optional[bool] = None
+        self,
+        pet: Optional[Pet | str] = None,
+        status: Optional[bool] = None,
+        category: Optional[Category] = None,
     ) -> list[Task]:
-        """Filter across all pets by pet and/or completion (True = done)."""
+        """Filter across all pets by pet (object or name), completion (True = done)
+        and/or category."""
+        if isinstance(pet, str):
+            name = pet.lower()
+            match = lambda t: t.pet is not None and t.pet.name.lower() == name
+        else:
+            match = lambda t: pet is None or t.pet is pet
         return [
             task
             for task in self.owner.get_all_tasks()
-            if (pet is None or task.pet is pet)
+            if match(task)
             and (status is None or task.completed == status)
+            and (category is None or task.category == category)
         ]
 
     def explain_plan(self) -> str:
@@ -236,6 +325,10 @@ class Scheduler:
             )
         return "\n".join(lines)
 
+    def complete_task(self, task: Task, now: Optional[datetime] = None) -> Optional[Task]:
+        """Complete a task (default time: now); returns the new occurrence if recurring."""
+        return task.mark_complete(completed_at=now or datetime.now())
+
     def get_next_task(self, now: datetime) -> Optional[ScheduledItem]:
         """The current or next unfinished item that hasn't ended yet."""
         for item in self.sort_by_time():
@@ -256,38 +349,189 @@ class Scheduler:
         """Highest priority first; earlier due time breaks ties, undated last."""
         return sorted(tasks, key=lambda t: (-t.priority, t.due or datetime.max))
 
-    def _fit(self, tasks: list[Task], on_date: date) -> None:
-        """Pick ranked tasks that fit the budget, then lay them out in time order."""
-        budget = self.owner.get_available_time(on_date)
-        chosen, used = [], 0
-        for task in tasks:
-            if used + task.duration_minutes <= budget:
-                chosen.append(task)
-                used += task.duration_minutes
-            else:
-                self.skipped_tasks.append(task)
+    def _score(self, task: Task, on_date: date) -> int:
+        """Value of doing the task today, used as the knapsack "profit".
 
-        day_start = self.owner.preferences.get("day_start", time(8, 0))
-        cursor = datetime.combine(on_date, day_start)
-        chosen.sort(key=lambda t: (t.due or datetime.max, -t.priority))
-        for task in chosen:
-            start = max(cursor, task.due) if task.due else cursor
-            end = start + timedelta(minutes=task.duration_minutes)
-            self.schedule.append(
-                ScheduledItem(task, start, end, self._reason(task, start, on_date))
+        score = priority * PRIORITY_WEIGHT, plus OVERDUE_BONUS if the task was due
+        on an earlier day than on_date. Tasks due today (even if the time has
+        passed) and undated tasks get no bonus.
+
+        Returns an int so totals are exact and ties are real ties.
+        """
+        score = int(task.priority) * PRIORITY_WEIGHT
+        if task.due is not None and task.due.date() < on_date:
+            score += OVERDUE_BONUS
+        return score
+
+    def _select(self, tasks: list[Task], on_date: date) -> list[Task]:
+        """Choose the highest-scoring set of tasks that fits the time budget.
+
+        Algorithm:
+          1. Medication tasks (Category.MEDS) are mandatory and always chosen;
+             their minutes are subtracted from the budget first. If they alone
+             exceed it, they are all kept, the remaining budget becomes 0, and a
+             message is added to self.warnings.
+          2. The other tasks form a 0/1 knapsack: weight = duration in minutes,
+             profit = _score(). Dynamic programming over minutes finds the set
+             with the greatest total score, so several short tasks can beat one
+             long task of equal priority (a greedy pass would not).
+          3. Tasks not chosen are appended to self.skipped_tasks, in rank order.
+
+        Args:
+            tasks: candidate tasks, already ranked (ties keep this order, so
+                earlier tasks win equal-score alternatives).
+            on_date: the day being planned; sets the budget and overdue bonus.
+
+        Returns:
+            The chosen tasks: mandatory ones first, then the rest in rank order.
+
+        Complexity: O(n * remaining_minutes) time for n optional tasks.
+        """
+        budget = self.owner.get_available_time(on_date)
+        mandatory = [t for t in tasks if t.category is Category.MEDS]
+        optional = [t for t in tasks if t.category is not Category.MEDS]
+
+        remaining = budget - sum(t.duration_minutes for t in mandatory)
+        if remaining < 0:
+            self.warnings.append(
+                f"Medication tasks alone need {budget - remaining} min "
+                f"but only {budget} min are available."
             )
-            cursor = end
+            remaining = 0
+
+        # best[m] = (total score, chosen tasks) using at most m minutes.
+        best: list[tuple[int, list[Task]]] = [(0, [])] * (remaining + 1)
+        for task in optional:
+            d, value = task.duration_minutes, self._score(task, on_date)
+            for m in range(remaining, d - 1, -1):  # downward: each task used once
+                candidate = best[m - d][0] + value
+                if candidate > best[m][0]:
+                    best[m] = (candidate, best[m - d][1] + [task])
+
+        picked = {id(t) for t in best[remaining][1]}
+        chosen = mandatory + [t for t in optional if id(t) in picked]
+        chosen_ids = {id(t) for t in chosen}
+        self.skipped_tasks += [t for t in tasks if id(t) not in chosen_ids]
+        return chosen
+
+    def _place(self, chosen: list[Task], on_date: date) -> None:
+        """Put chosen tasks on the timeline using a list of free gaps.
+
+        Free time starts as one gap from the owner's day_start (preference,
+        default 08:00) to midnight. Tasks are then placed in this order:
+          1. Dated tasks, highest priority first (ties by due time). Each goes at
+             its due time, or at the earliest free slot after it. A task due
+             before the day starts, or on an earlier day, is treated as wanting
+             day_start.
+          2. Undated tasks, highest priority first, into the earliest gap that
+             fits. They have no delay limit.
+        A dated task whose slot would be more than the tolerance after its
+        desired time (preferences["max_delay_minutes"], default
+        DEFAULT_MAX_DELAY_MINUTES) is not placed; its slot is released and it is
+        recorded in self.unplaced with the reason. A task for which no gap fits at
+        all is recorded the same way. Placed tasks are appended to self.schedule
+        as ScheduledItems, sorted by start time.
+
+        Args:
+            chosen: tasks already selected by _select (their total fits the budget).
+            on_date: the day being planned.
+
+        Complexity: O(n * g) for n tasks and g gaps; g never exceeds n + 1.
+        """
+        day_start = datetime.combine(
+            on_date, self.owner.preferences.get("day_start", time(8, 0))
+        )
+        day_end = datetime.combine(on_date + timedelta(days=1), time(0, 0))
+        tolerance = timedelta(minutes=self.owner.preferences.get(
+            "max_delay_minutes", DEFAULT_MAX_DELAY_MINUTES
+        ))
+        gaps = [(day_start, day_end)]
+
+        dated = sorted((t for t in chosen if t.due), key=lambda t: (-t.priority, t.due))
+        flexible = sorted((t for t in chosen if not t.due), key=lambda t: -t.priority)
+
+        for task in dated + flexible:
+            desired = max(task.due, day_start) if task.due else day_start
+            start = self._take_slot(gaps, desired, task.duration_minutes)
+            if start is None:
+                self.unplaced.append((task, "no free slot left in the day"))
+            elif task.due and start - desired > tolerance:
+                self._give_back(gaps, start, task.duration_minutes)
+                self.unplaced.append((task, (
+                    f"no free slot within {int(tolerance.total_seconds() // 60)} min "
+                    f"of {desired:%H:%M}"
+                )))
+            else:
+                end = start + timedelta(minutes=task.duration_minutes)
+                self.schedule.append(
+                    ScheduledItem(task, start, end, self._reason(task, start, on_date))
+                )
+        self.schedule.sort(key=lambda item: item.start)
+
+    @staticmethod
+    def _take_slot(gaps: list, desired: datetime, minutes: int) -> Optional[datetime]:
+        """Claim the earliest slot of `minutes` starting at or after `desired`.
+
+        Args:
+            gaps: sorted, non-overlapping (start, end) free intervals.
+            desired: the earliest acceptable start time.
+            minutes: length of the slot needed.
+
+        Returns:
+            The start of the claimed slot, or None if no gap can hold it.
+
+        Mutates gaps: the claimed time is removed, which shrinks the gap or splits
+        it in two (the free time before and after the slot).
+        """
+        need = timedelta(minutes=minutes)
+        for i, (gap_start, gap_end) in enumerate(gaps):
+            start = max(gap_start, desired)
+            if start + need <= gap_end:
+                end = start + need
+                pieces = []
+                if gap_start < start:
+                    pieces.append((gap_start, start))
+                if end < gap_end:
+                    pieces.append((end, gap_end))
+                gaps[i:i + 1] = pieces
+                return start
+        return None
+
+    @staticmethod
+    def _give_back(gaps: list, start: datetime, minutes: int) -> None:
+        """Undo a _take_slot: return the slot to the free list.
+
+        Args:
+            gaps: sorted, non-overlapping (start, end) free intervals; mutated.
+            start: start of the slot being released.
+            minutes: length of the slot being released.
+
+        The slot is merged with any adjacent gaps, so the list stays sorted and
+        non-overlapping, and releasing a slot restores the original gap exactly.
+        """
+        gaps.append((start, start + timedelta(minutes=minutes)))
+        gaps.sort()
+        merged = [gaps[0]]
+        for gap_start, gap_end in gaps[1:]:
+            if gap_start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], gap_end))
+            else:
+                merged.append((gap_start, gap_end))
+        gaps[:] = merged
 
     @staticmethod
     def _reason(task: Task, start: datetime, on_date: date) -> str:
-        """Short explanation of how the task's due time shaped its placement."""
-        parts = []
+        """Short explanation of how the task's due time shaped its placement.
+
+        Returns one of: "flexible time" (no due time), "overdue from an earlier
+        day", "due HH:MM, shifted +N min to HH:MM (slot taken)" when the task
+        started after its due time, or "due HH:MM" when it is on time.
+        """
         if task.due is None:
-            parts.append("flexible time")
-        elif task.due.date() < on_date:
-            parts.append("overdue from an earlier day")
-        else:
-            parts.append(f"due {task.due:%H:%M}")
-            if start > task.due:
-                parts.append(f"delayed to {start:%H:%M} by earlier tasks")
-        return ", ".join(parts)
+            return "flexible time"
+        if task.due.date() < on_date:
+            return "overdue from an earlier day"
+        if start > task.due:
+            shift = int((start - task.due).total_seconds() // 60)
+            return f"due {task.due:%H:%M}, shifted +{shift} min to {start:%H:%M} (slot taken)"
+        return f"due {task.due:%H:%M}"

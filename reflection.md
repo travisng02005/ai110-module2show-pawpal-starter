@@ -27,10 +27,14 @@ Task now has a pet back-reference, so the scheduler can still tell which pet a t
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+One of the tradeoffs is that the tasks that are deemed "Mandatory" are not manual even though somethings in reality have the same level of importance it can be overlooked on rare occasions. I decieded which constraints mattered the most by how well things are automatically scheduled based on the logic used (priority and duration). I believe that it is important to make this as autonomous and easy to use as possible.
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+One of the tradeoffs that had to be made was the readibility of the code, but because of that we are able to 
 
 ---
 
