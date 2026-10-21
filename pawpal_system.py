@@ -46,6 +46,7 @@ class Task:
     pet: Optional["Pet"] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        """Reject non-positive durations at creation time."""
         if self.duration_minutes <= 0:
             raise ValueError("duration_minutes must be positive")
 
@@ -66,12 +67,15 @@ class Task:
         return next_task
 
     def reschedule(self, new_due: datetime) -> None:
+        """Move the task's due time to new_due."""
         self.due = new_due
 
     def is_overdue(self, now: datetime) -> bool:
+        """True if the task is unfinished and its due time has passed."""
         return not self.completed and self.due is not None and self.due < now
 
     def __str__(self) -> str:
+        """One-line summary like '[ ] Walk (walk, 30 min, HIGH, due Oct 20 08:00)'."""
         mark = "x" if self.completed else " "
         due = f", due {self.due:%b %d %H:%M}" if self.due else ""
         return (
@@ -89,6 +93,7 @@ class Pet:
     tasks: list[Task] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        """Validate age and link any constructor-supplied tasks to this pet."""
         if self.age < 0:
             raise ValueError("age cannot be negative")
         # Tasks passed to the constructor need their back-reference set too.
@@ -105,6 +110,7 @@ class Pet:
         self.tasks.append(task)
 
     def remove_task(self, task: Task) -> None:
+        """Remove the task (matched by identity) and clear its pet link."""
         # Compare by identity: dataclass == would match any identical-looking task.
         for i, t in enumerate(self.tasks):
             if t is task:
@@ -113,9 +119,11 @@ class Pet:
                 return
 
     def get_pending_tasks(self) -> list[Task]:
+        """Tasks that are not yet completed."""
         return [t for t in self.tasks if not t.completed]
 
     def get_tasks_by_category(self, category: Category) -> list[Task]:
+        """Tasks belonging to the given category."""
         return [t for t in self.tasks if t.category == category]
 
 
@@ -127,10 +135,12 @@ class Owner:
     pets: list[Pet] = field(default_factory=list)
 
     def add_pet(self, pet: Pet) -> None:
+        """Add a pet to this owner, ignoring duplicates."""
         if not any(p is pet for p in self.pets):
             self.pets.append(pet)
 
     def remove_pet(self, pet: Pet) -> None:
+        """Remove a pet (matched by identity) from this owner."""
         self.pets = [p for p in self.pets if p is not pet]
 
     def get_all_tasks(self) -> list[Task]:
@@ -150,11 +160,13 @@ class ScheduledItem:
     reason: str = ""
 
     def overlaps(self, other: "ScheduledItem") -> bool:
+        """True if the two items' time ranges intersect."""
         return self.start < other.end and other.start < self.end
 
 
 class Scheduler:
     def __init__(self, owner: Owner):
+        """Create a scheduler that plans from the given owner's pets' tasks."""
         self.owner = owner
         self.schedule: list[ScheduledItem] = []
         self.skipped_tasks: list[Task] = []
@@ -177,9 +189,11 @@ class Scheduler:
         ]
 
     def sort_by_time(self) -> list[ScheduledItem]:
+        """Scheduled items ordered by start time (returns a new list)."""
         return sorted(self.schedule, key=lambda item: item.start)
 
     def sort_by_priority(self) -> list[ScheduledItem]:
+        """Scheduled items ordered highest priority first (returns a new list)."""
         return sorted(
             self.schedule, key=lambda item: (-item.task.priority, item.start)
         )
@@ -189,6 +203,7 @@ class Scheduler:
         return [item for item in self.sort_by_time() if item.task.pet is pet]
 
     def get_skipped_for(self, pet: Pet) -> list[Task]:
+        """Tasks for one pet that didn't fit in the time budget."""
         return [task for task in self.skipped_tasks if task.pet is pet]
 
     def filter_tasks(
@@ -203,6 +218,7 @@ class Scheduler:
         ]
 
     def explain_plan(self) -> str:
+        """Plain-text plan: one line per item with its reason, then skipped tasks."""
         if not self.schedule and not self.skipped_tasks:
             return "Nothing to schedule."
         lines = []
@@ -264,6 +280,7 @@ class Scheduler:
 
     @staticmethod
     def _reason(task: Task, start: datetime, on_date: date) -> str:
+        """Short explanation of how the task's due time shaped its placement."""
         parts = []
         if task.due is None:
             parts.append("flexible time")

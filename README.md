@@ -44,15 +44,25 @@ pip install -r requirements.txt
 
 ## 🖥️ Sample Output
 
-Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
+Output from running `python3 main.py`, which builds an owner with two pets (Buddy and Mia), adds five tasks, and prints the generated plan:
 
 ```
-# e.g.:
-# Daily plan for Biscuit (Golden Retriever):
-#   08:00 — Morning walk (30 min) [priority: high]
-#   09:00 — Feeding (10 min) [priority: high]
-#   ...
+Today's Schedule · Travis · Tuesday, October 20
+───────────────────────────────────────────────────────────
+TIME          PET     TASK              PRIORITY   DURATION
+───────────────────────────────────────────────────────────
+08:00-08:30   Buddy   Morning walk      HIGH         30 min
+08:30-08:35   Mia     Thyroid meds      HIGH          5 min
+              ↳ due 08:15, delayed to 08:30 by earlier tasks
+12:00-12:25   Mia     Playtime          MEDIUM       25 min
+18:00-18:10   Buddy   Evening feeding   HIGH         10 min
+18:10-18:30   Buddy   Brush coat        LOW          20 min
+              ↳ flexible time
+───────────────────────────────────────────────────────────
+Planned 90 of 120 min  [███████████████░░░░░] 75%
 ```
+
+The plan covers both pets at once. Mia's meds were due at 08:15 but start at 08:30 because Buddy's walk runs until then, and the output says so. To see one pet's tasks only, pass a name: `python3 main.py Mia`.
 
 ## 🧪 Testing PawPal+
 
@@ -72,14 +82,25 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+| Feature           | Method(s)                       | Notes                            |
+|-------------------|---------------------------------|----------------------------------|
+| Task sorting      | `_rank()`, `sort_by_priority()` | Priority first, then due time    |
+| Filtering         | `_fit()`, `filter_tasks()`      | Skips tasks past the time budget |
+| Conflict handling | `detect_conflicts()`            | Flags overlapping time slots     |
+| Recurring tasks   | `mark_complete()`               | Daily or weekly copy per pet     |
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+- **Sorting:** `_rank()` orders tasks by priority (highest first), then earlier due time, with
+  undated tasks last. `sort_by_time()` and `sort_by_priority()` return new lists of the planned
+  items and leave the stored schedule unchanged.
+- **Filtering:** `_collect_pending()` gathers pending tasks from every pet through
+  `Owner.get_all_tasks()`. `_fit()` keeps tasks until the owner's time budget runs out and moves the
+  rest to `skipped_tasks`. `filter_tasks()` filters by pet and/or completion status, and
+  `get_schedule_for()` / `get_skipped_for()` return one pet's slice of the plan.
+- **Conflicts:** `_fit()` never starts a task before the previous one ends, so tasks due at the same
+  time are delayed (the reason says so). `ScheduledItem.overlaps()` and `detect_conflicts()` catch
+  overlaps added or moved by hand; a generated plan has none.
+- **Recurrence:** completing a `DAILY` or `WEEKLY` task adds a copy due one day or week later to the
+  same pet. One-off or already-completed tasks create nothing.
 
 ## 📸 Demo Walkthrough
 
