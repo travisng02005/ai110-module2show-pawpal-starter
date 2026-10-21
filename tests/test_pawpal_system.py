@@ -44,6 +44,31 @@ def test_sort_tasks_by_time_puts_undated_last():
     assert [t.title for t in s.sort_tasks_by_time()] == ["early", "late", "free"]
 
 
+def test_sort_tasks_by_time_returns_chronological_order_across_pets():
+    a, b = Pet("Buddy", "dog"), Pet("Mia", "cat")
+    a.add_task(Task("evening", due=D.replace(hour=19)))
+    b.add_task(Task("morning", due=D.replace(hour=7)))
+    a.add_task(Task("noon", due=D.replace(hour=12)))
+    b.add_task(Task("tomorrow", due=D.replace(hour=6) + timedelta(days=1)))
+    _, s = make(a, b)
+    titles = [t.title for t in s.sort_tasks_by_time()]
+    assert titles == ["morning", "noon", "evening", "tomorrow"]
+
+
+def test_sort_by_time_returns_scheduled_items_in_chronological_order():
+    pet = Pet("Buddy", "dog")
+    pet.add_task(Task("late", duration_minutes=20, priority=Priority.HIGH,
+                      due=D.replace(hour=17)))
+    pet.add_task(Task("early", duration_minutes=20, priority=Priority.LOW,
+                      due=D.replace(hour=9)))
+    pet.add_task(Task("mid", duration_minutes=20, priority=Priority.MEDIUM,
+                      due=D.replace(hour=13)))
+    s = plan([pet])
+    starts = [i.start for i in s.sort_by_time()]
+    assert starts == sorted(starts)
+    assert [i.task.title for i in s.sort_by_time()] == ["early", "mid", "late"]
+
+
 def test_filter_by_pet_name_status_and_category():
     a, b = Pet("Buddy", "dog"), Pet("Mia", "cat")
     walk = Task("walk", category=Category.WALK)
